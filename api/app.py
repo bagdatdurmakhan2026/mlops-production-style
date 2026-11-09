@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 import pickle
 from pathlib import Path
 from typing import List
+import numpy as np
 
 app = FastAPI(title="MLOps Production Pipeline", version="1.0.0")
 
@@ -46,7 +47,6 @@ def predict(data: PredictionInput):
         )
     
     # Превращаем входной список в формат, понятный scikit-learn (2D массив)
-    import numpy as np
     features_array = np.array(data.features).reshape(1, -1)
     
     prediction = model.predict(features_array)
