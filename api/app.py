@@ -122,7 +122,7 @@ def predict(data: PredictionInput, request: Request):
     binary_defaults = request.app.state.binary_defaults
     if len(data.features) not in {2, len(model_features)}:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"Expected 2 or {len(model_features)} features "
                 f"in this order: {model_features}"
@@ -131,7 +131,7 @@ def predict(data: PredictionInput, request: Request):
 
     if data.features[0] < 0 or data.features[1] < 0:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="votes and approx_cost must be non-negative",
         )
 
