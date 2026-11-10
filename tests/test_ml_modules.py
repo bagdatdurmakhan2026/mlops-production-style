@@ -1,8 +1,20 @@
+import hashlib
+import pickle
+import platform
+from types import SimpleNamespace
+
+import numpy as np
 import pandas as pd
+import pytest
+import sklearn
 
 from src.geo_clustering import GeoAnalyzer
 from src.recommender import RestaurantRecommender
+from src.data_validation import verify_dataset_checksum
 from src.train import _clean_dataset, _filter_training_outliers
+from src import train as train_module
+from scripts.model_registry import promote_version
+from sklearn.dummy import DummyRegressor
 
 
 def _restaurant_frame(size=12):
@@ -61,6 +73,128 @@ def test_dataset_validation_reports_invalid_rows():
     assert report["dropped_incomplete_rows"] == 1
     assert report["dropped_domain_invalid_rows"] == 2
     assert report["negative_vote_rows"] == 1
+
+
+def test_dataset_validation_rejects_missing_columns():
+    with pytest.raises(ValueError, match="обязательные колонки"):
+        _clean_dataset(pd.DataFrame({"rate": ["4.0/5"]}))
+
+
+def test_dataset_validation_rejects_empty_clean_result():
+    frame = _restaurant_frame()
+    frame["rate"] = "not rated"
+
+    with pytest.raises(ValueError, match="не осталось строк"):
+        _clean_dataset(frame)
+
+
+def test_dataset_validation_drops_infinite_numeric_values():
+    frame = _restaurant_frame()
+    frame["votes"] = frame["votes"].astype(float)
+    frame.loc[0, "votes"] = float("inf")
+
+    features, target, report = _clean_dataset(frame)
+
+    assert len(features) == len(target) == len(frame) - 1
+    assert report["dropped_incomplete_rows"] == 1
+    assert np.isfinite(features.to_numpy()).all()
+
+
+def test_dataset_checksum_matches_manifest_and_detects_changes(tmp_path):
+    dataset_path = tmp_path / "restaurants.csv"
+    dataset_path.write_bytes(b"restaurant,data\n")
+    manifest_path = tmp_path / "checksums.sha256"
+    manifest_path.write_text(
+        f"{hashlib.sha256(dataset_path.read_bytes()).hexdigest()}  restaurants.csv\n",
+        encoding="utf-8",
+    )
+
+    expected_checksum = hashlib.sha256(dataset_path.read_bytes()).hexdigest()
+    assert verify_dataset_checksum(dataset_path, manifest_path) == expected_checksum
+    dataset_path.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="Checksum mismatch"):
+        verify_dataset_checksum(dataset_path, manifest_path)
+
+
+def test_training_reports_missing_dataset(monkeypatch, tmp_path):
+    monkeypatch.setattr(train_module, "DATA_DIR", tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="Датасет не найден"):
+        train_module.load_data()
+
+
+def test_model_promotion_updates_artifact_and_champion_alias(tmp_path):
+    source_path = tmp_path / "registered-model.pkl"
+    model_path = tmp_path / "active-model.pkl"
+    with source_path.open("wb") as model_file:
+        pickle.dump(
+            {
+                "model": DummyRegressor(),
+                "features": ["votes", "approx_cost"],
+                "training_environment": {
+                    "python": platform.python_version(),
+                    "numpy": np.__version__,
+                    "scikit-learn": sklearn.__version__,
+                },
+            },
+            model_file,
+        )
+
+    class FakeClient:
+        alias = None
+
+        def get_model_version(self, name, version):
+            assert name == "restaurant-rating"
+            assert version == "3"
+            return SimpleNamespace(run_id="run-id", status="READY")
+
+        def download_artifacts(self, run_id, artifact_path):
+            assert run_id == "run-id"
+            assert artifact_path == "deployment/model.pkl"
+            return str(source_path)
+
+        def set_registered_model_alias(self, name, alias, version):
+            self.alias = (name, alias, version)
+
+    client = FakeClient()
+    promote_version("3", client, model_path)
+
+    assert model_path.read_bytes() == source_path.read_bytes()
+    assert client.alias == ("restaurant-rating", "champion", "3")
+
+
+def test_model_promotion_rejects_incompatible_artifact(tmp_path):
+    source_path = tmp_path / "incompatible-model.pkl"
+    model_path = tmp_path / "active-model.pkl"
+    model_path.write_bytes(b"previous model")
+    with source_path.open("wb") as model_file:
+        pickle.dump(
+            {
+                "model": DummyRegressor(),
+                "features": ["votes", "approx_cost"],
+                "training_environment": {"scikit-learn": "0.0"},
+            },
+            model_file,
+        )
+
+    class FakeClient:
+        alias_updated = False
+
+        def get_model_version(self, name, version):
+            return SimpleNamespace(run_id="run-id", status="READY")
+
+        def download_artifacts(self, run_id, artifact_path):
+            return str(source_path)
+
+        def set_registered_model_alias(self, name, alias, version):
+            self.alias_updated = True
+
+    client = FakeClient()
+    with pytest.raises(RuntimeError, match="was trained with scikit-learn"):
+        promote_version("3", client, model_path)
+
+    assert model_path.read_bytes() == b"previous model"
+    assert not client.alias_updated
 
 
 def test_recommender_returns_neighbors_and_clusters():

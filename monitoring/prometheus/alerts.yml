@@ -1,0 +1,20 @@
+groups:
+  - name: restaurant-api
+    rules:
+      - alert: RestaurantApiUnavailable
+        expr: up{job="restaurant-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Restaurant prediction API is unavailable
+          description: Prometheus cannot scrape the API metrics endpoint.
+
+      - alert: RestaurantInputRangeDrift
+        expr: sum by (feature) (increase(restaurant_input_drift_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: API inputs exceed the training reference range
+          description: "Feature {{ $labels.feature }} exceeded its reference range."

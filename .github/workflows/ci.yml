@@ -24,7 +24,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Compile Python files
-        run: python -m compileall -q api src tests
+        run: python -m compileall -q api src scripts tests
 
       - name: Run tests
         run: python -m pytest -q
@@ -35,20 +35,41 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t restaurant-ml-api .
+      - name: Validate Compose configuration
+        run: docker compose --profile tools config --quiet
 
-      - name: Smoke-test API container
+      - name: Validate Prometheus configuration
         run: |
-          docker run -d --name restaurant-ml-api-test -p 8000:8000 restaurant-ml-api
-          trap 'docker logs restaurant-ml-api-test; docker rm -f restaurant-ml-api-test' EXIT
-          for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8000/healthz; then
-              break
-            fi
-            sleep 2
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.5.0 \
+            promtool check config /etc/prometheus/prometheus.yml
+
+      - name: Build MLOps stack
+        run: docker compose --profile tools build
+
+      - name: Smoke-test MLOps stack
+        run: |
+          export GRAFANA_ADMIN_PASSWORD=local-demo-only
+          docker compose up -d
+          trap 'docker compose down -v' EXIT
+          for endpoint in \
+            http://127.0.0.1:8000/readyz \
+            http://127.0.0.1:9090/-/healthy \
+            http://127.0.0.1:3000/api/health \
+            http://127.0.0.1:5000/health; do
+            ready=0
+            for attempt in {1..45}; do
+              if curl --fail --silent "$endpoint" >/dev/null; then
+                ready=1
+                break
+              fi
+              sleep 2
+            done
+            test "$ready" -eq 1
           done
-          curl --fail --silent http://127.0.0.1:8000/healthz
+
+          curl --fail --silent http://127.0.0.1:8000/livez
           prediction=$(curl --fail --silent \
             -H "Content-Type: application/json" \
             -d '{"features":[1200,1500]}' \
@@ -58,4 +79,15 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"features":[1000000000,1000000000]}' \
             http://127.0.0.1:8000/predict
-          curl --fail --silent http://127.0.0.1:8000/metrics | grep -q restaurant_input_drift_total
+          for attempt in {1..30}; do
+            query=$(curl --fail --silent \
+              'http://127.0.0.1:9090/api/v1/query?query=restaurant_prediction_requests_total')
+            if python -c "import json,sys; data=json.loads(sys.argv[1])['data']['result']; sys.exit(0 if data and float(data[0]['value'][1]) > 0 else 1)" "$query"; then
+              break
+            fi
+            sleep 2
+          done
+          python -c "import json,sys; data=json.loads(sys.argv[1])['data']['result']; assert data and float(data[0]['value'][1]) > 0" "$query"
+          curl --fail --silent --user "admin:$GRAFANA_ADMIN_PASSWORD" \
+            'http://127.0.0.1:3000/api/search?query=Restaurant' \
+            | grep -q 'Restaurant API'

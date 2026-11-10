@@ -1,6 +1,7 @@
 import logging
 import pickle
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated
 
@@ -8,7 +9,9 @@ import numpy as np
 import pandas as pd
 import sklearn
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field, FiniteFloat
 
@@ -88,6 +91,20 @@ app = FastAPI(
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(
+    _request: Request, exception: RequestValidationError
+) -> JSONResponse:
+    errors = [
+        {key: value for key, value in error.items() if key != "input"}
+        for error in exception.errors()
+    ]
+    return JSONResponse(
+        status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
+        content={"detail": jsonable_encoder(errors)},
+    )
+
+
 class PredictionInput(BaseModel):
     features: Annotated[
         list[FiniteFloat],
@@ -103,11 +120,23 @@ class PredictionInput(BaseModel):
 
 
 @app.get("/healthz", status_code=status.HTTP_200_OK)
+@app.get("/readyz", status_code=status.HTTP_200_OK)
 def health_check(request: Request):
+    model_loaded = hasattr(request.app.state, "model")
+    if not model_loaded:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model is not loaded",
+        )
     return {
-        "status": "healthy",
-        "model_loaded": hasattr(request.app.state, "model"),
+        "status": "ready",
+        "model_loaded": True,
     }
+
+
+@app.get("/livez", status_code=status.HTTP_200_OK)
+def liveness_check():
+    return {"status": "alive"}
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -122,7 +151,7 @@ def predict(data: PredictionInput, request: Request):
     binary_defaults = request.app.state.binary_defaults
     if len(data.features) not in {2, len(model_features)}:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
             detail=(
                 f"Expected 2 or {len(model_features)} features "
                 f"in this order: {model_features}"
@@ -131,7 +160,7 @@ def predict(data: PredictionInput, request: Request):
 
     if data.features[0] < 0 or data.features[1] < 0:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
             detail="votes and approx_cost must be non-negative",
         )
 

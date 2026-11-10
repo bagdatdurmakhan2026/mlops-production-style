@@ -19,9 +19,12 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from xgboost import XGBRegressor
 
+from src.data_validation import verify_dataset_checksum
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 CSV_NAME = "bangalore-restaurants.csv"
+CHECKSUMS_PATH = DATA_DIR / "checksums.sha256"
 MODEL_PATH = ROOT_DIR / "artifacts" / "models" / "model.pkl"
 METRICS_PATH = ROOT_DIR / "artifacts" / "metrics" / "metrics.json"
 
@@ -31,6 +34,7 @@ def load_data():
     if not csv_path.exists():
         raise FileNotFoundError(f"Датасет не найден по пути: {csv_path}")
 
+    verify_dataset_checksum(csv_path, CHECKSUMS_PATH)
     df = pd.read_csv(csv_path)
     print("Доступные колонки в датасете:", df.columns.tolist())
     return df
@@ -287,21 +291,21 @@ def main():
             file,
         )
 
-    default_tracking_uri = (
-        f"sqlite:///{(ROOT_DIR / 'artifacts' / 'mlflow.db').as_posix()}"
-    )
-    mlflow.set_tracking_uri(
-        os.environ.get("MLFLOW_TRACKING_URI", default_tracking_uri)
-    )
+    default_tracking_uri = f"sqlite:///{(ROOT_DIR / 'artifacts' / 'mlflow.db').as_posix()}"
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", default_tracking_uri)
+    mlflow.set_tracking_uri(tracking_uri)
     client = MlflowClient()
     experiment_name = "restaurant-rating"
     experiment = client.get_experiment_by_name(experiment_name)
     if experiment is None:
         try:
-            experiment_id = client.create_experiment(
-                experiment_name,
-                artifact_location=(ROOT_DIR / "artifacts" / "mlflow").as_uri(),
-            )
+            if tracking_uri.startswith(("http://", "https://")):
+                experiment_id = client.create_experiment(experiment_name)
+            else:
+                experiment_id = client.create_experiment(
+                    experiment_name,
+                    artifact_location=(ROOT_DIR / "artifacts" / "mlflow").as_uri(),
+                )
         except MlflowException:
             experiment = client.get_experiment_by_name(experiment_name)
             if experiment is None:
@@ -336,11 +340,16 @@ def main():
         )
         mlflow.log_dict(validation_report, "data_validation.json")
         mlflow.log_dict(metrics, "evaluation/metrics.json")
-        mlflow.sklearn.log_model(
+        model_info = mlflow.sklearn.log_model(
             model,
             name="model",
             serialization_format="pickle",
             registered_model_name="restaurant-rating",
+        )
+        if model_info.registered_model_version is None:
+            raise RuntimeError("MLflow did not return the registered model version.")
+        client.set_registered_model_alias(
+            "restaurant-rating", "candidate", str(model_info.registered_model_version)
         )
         mlflow.log_artifact(str(MODEL_PATH), artifact_path="deployment")
     print(f"Метрики сохранены в {METRICS_PATH}")

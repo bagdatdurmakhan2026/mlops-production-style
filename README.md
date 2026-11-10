@@ -2,8 +2,8 @@
 
 A Python project for restaurant rating regression, restaurant recommendations,
 cuisine classification, and geospatial clustering. It includes a FastAPI
-prediction service, reproducible evaluation scripts, automated tests, CI, and a
-Docker image.
+prediction service, MLflow tracking and registry, Prometheus/Grafana monitoring,
+automated tests, CI, and a local Docker Compose stack.
 
 > **Data note:** source CSVs are intentionally excluded from Git and Docker.
 > Place the datasets listed below in `data/` before running data-dependent jobs.
@@ -39,25 +39,34 @@ data/
 
 The Bangalore dataset is used by training, recommendation, and cuisine
 classification scripts. The geospatial script processes both datasets when
-present.
+present. Their exact development-copy SHA-256 values are tracked in
+`data/checksums.sha256`; training verifies the Bangalore file before reading it.
+The source and license for these local copies remain unverified, so this does
+not make the datasets redistributable or independently downloadable.
 
 ## Project Layout
 
 ```text
 api/app.py                         FastAPI inference service
+docker-compose.yml                 Local MLflow/API/Prometheus/Grafana stack
 artifacts/
 ├── metrics/metrics.json           Latest regression evaluation
 └── models/model.pkl               Trained model artifact
 data/                              Local datasets (not committed)
 data/README.md                     Dataset naming, schema, and provenance notes
+data/checksums.sha256              SHA-256 for the exact development CSV files
+monitoring/                        Prometheus rules and Grafana dashboard config
 reports/maps/                      Generated city maps and heatmaps
 src/train.py                       Rating training, tuning, and evaluation
+src/data_validation.py             Dataset checksum verification
+scripts/model_registry.py          List, promote, and roll back model versions
 src/recommender.py                 Content recommendations and K-Means
 src/cuisine_classifier.py          Cuisine classification experiments
 src/geo_clustering.py              City maps and geospatial clustering
 src/eda.py                         Dataset inspection helper
 tests/                             API and ML-module tests
 Dockerfile                         Non-root API container
+Dockerfile.training                Training and MLflow server image
 ```
 
 ## Run the Project
@@ -89,6 +98,12 @@ mlflow ui --backend-store-uri sqlite:///artifacts/mlflow.db
 
 Set `MLFLOW_TRACKING_URI` to use a shared tracking server instead.
 
+Check the local dataset before training:
+
+```powershell
+python -m scripts.verify_data
+```
+
 Current checked-in/local results are dataset-dependent. Regression should be
 reported with RMSE, MAE, and R²; an “82% accuracy” claim is not established by
 these regression metrics.
@@ -100,7 +115,9 @@ uvicorn api.app:app --reload
 ```
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
-- Health check: <http://127.0.0.1:8000/healthz>
+- Liveness: <http://127.0.0.1:8000/livez>
+- Readiness: <http://127.0.0.1:8000/readyz>
+- Compatibility health check: <http://127.0.0.1:8000/healthz>
 - Prediction: `POST /predict`
 
 Example request:
@@ -153,29 +170,73 @@ density.
 
 ```powershell
 python -m pytest -q
-python -m compileall -q api src tests
+python -m compileall -q api src scripts tests
 ```
 
-GitHub Actions runs compilation, unit/API tests, builds the Docker image, and
-smoke-tests `/healthz` and `/predict` in the running container without requiring
-the large local datasets.
+GitHub Actions runs compilation and unit/API tests, validates the Compose and
+Prometheus configuration, builds the stack, then smoke-tests the API,
+Prometheus, Grafana, and MLflow. The workflow does not train a model because
+the large data files are intentionally not stored in Git.
 
-### Docker
+### Run the local MLOps stack
 
 ```powershell
-docker build -t restaurant-ml-api .
-docker run --rm -p 8000:8000 restaurant-ml-api
+docker compose up --build -d
 ```
 
-The container includes the API and trained model, runs as a non-root user, and
-does not copy local datasets or generated HTML maps.
+Open the local services:
+
+- API and Swagger: <http://127.0.0.1:8000/docs>
+- MLflow experiments and Registry: <http://127.0.0.1:5000>
+- Prometheus targets and alerts: <http://127.0.0.1:9090>
+- Grafana dashboard: <http://127.0.0.1:3000> (`admin` / `local-demo-only` by
+  default; override with `GRAFANA_ADMIN_PASSWORD` in a local `.env` file)
+
+The stack binds ports to localhost, persists MLflow/Prometheus/Grafana state in
+Docker named volumes, and starts the inference container as a non-root user.
+Change the demo Grafana password before sharing the stack. Do not expose this
+unauthenticated MLflow demo server directly to the public internet.
+
+To train using your local data and register a new version:
+
+```powershell
+docker compose --profile tools run --build --rm trainer
+docker compose --profile tools run --rm trainer python scripts/model_registry.py list
+```
+
+Training places the new Registry version under the `candidate` alias. To deploy
+or roll back to a version number shown by `list`:
+
+```powershell
+docker compose --profile tools run --rm trainer python scripts/model_registry.py promote 1
+docker compose restart api
+```
+
+Promotion validates that the model artifact matches the runtime before
+replacing the active file and moving the Registry `champion` alias. Restarting
+the API loads that artifact. Repeating the command with an older version number
+rolls back the local demo. This is an explicit single-host promotion workflow,
+not an automated cloud deployment or zero-downtime rollout.
+
+Prometheus scrapes prediction request, latency, and out-of-training-range
+counters. The Grafana dashboard visualizes them; Prometheus also defines alerts
+for API unavailability and out-of-range input. The current drift signal is a
+per-feature 1st-to-99th percentile range heuristic, not a statistical
+distribution-drift test or an automatic retraining trigger.
 
 The API fails startup if the model artifact is missing or invalid rather than
-starting in a degraded state that only fails on prediction requests.
-It validates finite, non-negative request values, exposes Prometheus metrics at
-`/metrics`, and increments per-feature drift counters when inputs fall outside
-the 1st-to-99th percentile training reference interval. These counters are
-in-memory and reset when the service restarts; production persistence and alert
-routing require a Prometheus server. The model stores its training versions of
-scikit-learn and NumPy; API startup rejects artifacts created with incompatible
-versions to avoid silently loading an unsupported pickle.
+starting in a degraded state that only fails on prediction requests. It exposes
+separate `/livez` and `/readyz` checks and validates finite, non-negative input
+values. Its process-local counters reset on restart; Prometheus persists scraped
+samples in the Compose demo. Model artifacts store their training versions of
+scikit-learn and NumPy; API startup rejects incompatible artifacts rather than
+silently loading an unsupported pickle.
+
+Stop the stack without deleting experiment or dashboard history:
+
+```powershell
+docker compose down
+```
+
+`docker compose down -v` also deletes the local named volumes and their
+persisted MLflow, Prometheus, and Grafana state.

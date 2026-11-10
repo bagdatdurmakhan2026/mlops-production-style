@@ -13,6 +13,7 @@ env/
 # IDE & Editor files
 .vscode/
 .idea/
+.env
 .DS_Store
 
 # Machine Learning models & large data
@@ -24,6 +25,9 @@ data/*.csv
 artifacts/mlflow/
 artifacts/mlflow.db
 artifacts/mlflow.db-*
+mlruns/
+mlflow.db
+mlflow.db-*
 
 # Logs & temp files
 *.log

@@ -21,6 +21,14 @@ def test_healthz(client):
     assert "status" in data
     assert data.get("model_loaded") is True
 
+
+def test_liveness(client):
+    response = client.get("/livez")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "alive"}
+
+
 def test_predict(client):
     # Передаем корректные реалистичные признаки: [votes, approx_cost]
     payload = {"features": [1200.0, 1500.0]}
@@ -40,6 +48,18 @@ def test_predict_rejects_wrong_feature_count(client):
 def test_predict_rejects_negative_counts(client):
     response = client.post("/predict", json={"features": [-1, 500]})
     assert response.status_code == 422
+
+
+def test_predict_rejects_infinite_features(client):
+    response = client.post(
+        "/predict",
+        content='{"features":[1e10000,500]}',
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == "Input should be a finite number"
+    assert "input" not in response.json()["detail"][0]
 
 
 def test_metrics_endpoint_exposes_prediction_metrics(client):
@@ -63,6 +83,17 @@ def test_out_of_reference_input_is_counted_as_drift(client):
 def test_predict_rejects_non_finite_features():
     with pytest.raises(ValidationError):
         api_module.PredictionInput(features=[float("nan"), 500.0])
+
+
+def test_readyz_rejects_unloaded_model():
+    from types import SimpleNamespace
+
+    with pytest.raises(api_module.HTTPException) as error:
+        api_module.health_check(
+            SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+        )
+
+    assert error.value.status_code == 503
 
 
 def test_startup_fails_when_model_is_missing(monkeypatch, tmp_path):

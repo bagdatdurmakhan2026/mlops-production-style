@@ -8,6 +8,7 @@ env/
 data/
 reports/
 tests/
+monitoring/
 *.html
 .vscode/
 .idea/
