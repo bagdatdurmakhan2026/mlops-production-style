@@ -1,5 +1,5 @@
 -r requirements-api.txt
-xgboost==3.4.1
+xgboost==3.2.0
 folium==0.15.1
 mlflow==3.18.0
 pytest==9.2.0
