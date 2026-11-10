@@ -1,9 +1,16 @@
 import json
+import os
 import pickle
+import platform
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import sklearn
+import mlflow
+import mlflow.sklearn
+from mlflow.exceptions import MlflowException
+from mlflow.tracking import MlflowClient
 from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.feature_selection import mutual_info_regression
@@ -60,25 +67,54 @@ def _clean_dataset(df):
             if binary.notna().any():
                 features[column] = binary
 
-    clean = features.assign(rate=target).replace([np.inf, -np.inf], np.nan).dropna()
+    parsed = (
+        features.assign(rate=target)
+        .replace([np.inf, -np.inf], np.nan)
+    )
+    complete = parsed.notna().all(axis=1)
+    valid_domain = (
+        parsed["rate"].between(0, 5)
+        & parsed["votes"].ge(0)
+        & parsed["approx_cost"].ge(0)
+    )
+    clean = parsed.loc[complete & valid_domain]
     if clean.empty:
         raise ValueError("После очистки данных не осталось строк для обучения.")
 
-    # Убираем выбросы по IQR для числовых признаков и целевого рейтинга.
-    mask = pd.Series(True, index=clean.index)
-    for column in ("votes", "approx_cost", "rate"):
-        q1, q3 = clean[column].quantile([0.25, 0.75])
-        iqr = q3 - q1
-        if iqr > 0:
-            mask &= clean[column].between(q1 - 1.5 * iqr, q3 + 1.5 * iqr)
-    clean = clean.loc[mask]
-
-    if clean.empty:
-        raise ValueError("После удаления выбросов не осталось строк для обучения.")
-
     X = clean.drop(columns="rate")
     y = clean["rate"]
-    return X, y
+    validation_report = {
+        "input_rows": int(len(df)),
+        "valid_rows": int(len(clean)),
+        "dropped_incomplete_rows": int((~complete).sum()),
+        "dropped_domain_invalid_rows": int((complete & ~valid_domain).sum()),
+        "rating_min": float(y.min()),
+        "rating_max": float(y.max()),
+        "negative_vote_rows": int((parsed["votes"] < 0).sum()),
+        "negative_cost_rows": int((parsed["approx_cost"] < 0).sum()),
+    }
+    return X, y, validation_report
+
+
+def _filter_training_outliers(X_train, y_train):
+    training = X_train.copy()
+    training["rate"] = y_train
+    mask = pd.Series(True, index=training.index)
+    bounds = {}
+
+    for column in ("votes", "approx_cost", "rate"):
+        q1, q3 = training[column].quantile([0.25, 0.75])
+        iqr = q3 - q1
+        lower = float(q1 - 1.5 * iqr)
+        upper = float(q3 + 1.5 * iqr)
+        bounds[column] = {"lower": lower, "upper": upper}
+        if iqr > 0:
+            mask &= training[column].between(lower, upper)
+
+    filtered = training.loc[mask]
+    if filtered.empty:
+        raise ValueError("После фильтрации train-выбросов не осталось данных.")
+    return filtered.drop(columns="rate"), filtered["rate"], bounds
 
 
 def _select_features(X_train, y_train):
@@ -149,9 +185,12 @@ def main():
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
     print("Загрузка и очистка данных...")
-    X, y = _clean_dataset(load_data())
-    X_train, X_test, y_train, y_test = train_test_split(
+    X, y, validation_report = _clean_dataset(load_data())
+    X_train_raw, X_test, y_train_raw, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
+    )
+    X_train, y_train, iqr_bounds = _filter_training_outliers(
+        X_train_raw, y_train_raw
     )
 
     selected_features, mutual_info = _select_features(X_train, y_train)
@@ -167,18 +206,31 @@ def main():
     }
 
     searches = _tune_models(X_train, y_train)
-    candidate_metrics = {}
-    for name, search in searches.items():
-        predictions = search.best_estimator_.predict(X_test)
-        candidate_metrics[name] = {
-            "rmse": float(np.sqrt(mean_squared_error(y_test, predictions))),
-            "mae": float(mean_absolute_error(y_test, predictions)),
-            "r2_score": float(r2_score(y_test, predictions)),
+    candidate_metrics = {
+        name: {
+            "cv_rmse": float(-search.best_score_),
             "best_params": search.best_params_,
         }
+        for name, search in searches.items()
+    }
 
-    best_name = min(candidate_metrics, key=lambda name: candidate_metrics[name]["rmse"])
+    best_name = min(
+        candidate_metrics,
+        key=lambda name: candidate_metrics[name]["cv_rmse"],
+    )
     model = searches[best_name].best_estimator_
+    holdout_predictions = model.predict(X_test)
+    holdout_metrics = {
+        "rmse": float(np.sqrt(mean_squared_error(y_test, holdout_predictions))),
+        "mae": float(mean_absolute_error(y_test, holdout_predictions)),
+        "r2_score": float(r2_score(y_test, holdout_predictions)),
+    }
+    training_environment = {
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+        "pandas": pd.__version__,
+        "scikit-learn": sklearn.__version__,
+    }
     permutation = permutation_importance(
         model, X_test, y_test, scoring="neg_root_mean_squared_error",
         n_repeats=5, random_state=42, n_jobs=-1,
@@ -190,29 +242,38 @@ def main():
     print(f"Выбрана модель: {best_name}")
     print("Важность признаков (permutation):")
     print(permutation_scores.round(4).to_string())
-    print(f"RMSE: {candidate_metrics[best_name]['rmse']:.4f}")
-    print(f"MAE: {candidate_metrics[best_name]['mae']:.4f}")
-    print(f"R2: {candidate_metrics[best_name]['r2_score']:.4f}")
+    print(f"Holdout RMSE: {holdout_metrics['rmse']:.4f}")
+    print(f"Holdout MAE: {holdout_metrics['mae']:.4f}")
+    print(f"Holdout R2: {holdout_metrics['r2_score']:.4f}")
 
     metrics = {
         "selected_model": best_name,
         "features": selected_features,
+        "selection_metric": "3-fold CV RMSE on training split",
+        "holdout_size": int(len(y_test)),
+        "training_size_after_iqr": int(len(y_train)),
+        "iqr_bounds_fit_on_training_split": iqr_bounds,
+        "data_validation": validation_report,
         "mutual_information": mutual_info.round(4).to_dict(),
         "permutation_importance": permutation_scores.round(4).to_dict(),
         "candidates": candidate_metrics,
-        "model": {
-            key: round(value, 4)
-            for key, value in candidate_metrics[best_name].items()
-            if key != "best_params"
-        },
+        "model": {key: round(value, 4) for key, value in holdout_metrics.items()},
         "baseline": {key: round(value, 4) for key, value in baseline_metrics.items()},
+        "training_environment": training_environment,
     }
     with open(METRICS_PATH, "w", encoding="utf-8") as file:
         json.dump(metrics, file, indent=4)
     binary_defaults = {
-        feature: float(X[feature].mode().iloc[0])
+        feature: float(X_train[feature].mode().iloc[0])
         for feature in selected_features
         if feature not in {"votes", "approx_cost"}
+    }
+    input_reference = {
+        feature: {
+            "lower": float(X_train[feature].quantile(0.01)),
+            "upper": float(X_train[feature].quantile(0.99)),
+        }
+        for feature in selected_features
     }
     with open(MODEL_PATH, "wb") as file:
         pickle.dump(
@@ -220,9 +281,68 @@ def main():
                 "model": model,
                 "features": selected_features,
                 "binary_defaults": binary_defaults,
+                "input_reference": input_reference,
+                "training_environment": training_environment,
             },
             file,
         )
+
+    default_tracking_uri = (
+        f"sqlite:///{(ROOT_DIR / 'artifacts' / 'mlflow.db').as_posix()}"
+    )
+    mlflow.set_tracking_uri(
+        os.environ.get("MLFLOW_TRACKING_URI", default_tracking_uri)
+    )
+    client = MlflowClient()
+    experiment_name = "restaurant-rating"
+    experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        try:
+            experiment_id = client.create_experiment(
+                experiment_name,
+                artifact_location=(ROOT_DIR / "artifacts" / "mlflow").as_uri(),
+            )
+        except MlflowException:
+            experiment = client.get_experiment_by_name(experiment_name)
+            if experiment is None:
+                raise
+            experiment_id = experiment.experiment_id
+    else:
+        experiment_id = experiment.experiment_id
+
+    with mlflow.start_run(experiment_id=experiment_id, run_name=best_name):
+        mlflow.log_param("selected_model", best_name)
+        mlflow.log_param("selection_metric", "3-fold CV RMSE")
+        mlflow.log_param("features", json.dumps(selected_features))
+        mlflow.log_param("training_rows_after_iqr", len(y_train))
+        mlflow.log_param("holdout_rows", len(y_test))
+        mlflow.log_params(
+            {
+                f"best.{key}": str(value)
+                for key, value in searches[best_name].best_params_.items()
+            }
+        )
+        mlflow.log_metrics(
+            {
+                f"cv_rmse.{name}": result["cv_rmse"]
+                for name, result in candidate_metrics.items()
+            }
+        )
+        mlflow.log_metrics(
+            {f"holdout.{key}": value for key, value in holdout_metrics.items()}
+        )
+        mlflow.log_metrics(
+            {f"baseline.{key}": value for key, value in baseline_metrics.items()}
+        )
+        mlflow.log_dict(validation_report, "data_validation.json")
+        mlflow.log_dict(metrics, "evaluation/metrics.json")
+        mlflow.sklearn.log_model(
+            model,
+            name="model",
+            serialization_format="pickle",
+            registered_model_name="restaurant-rating",
+        )
+        mlflow.log_artifact(str(MODEL_PATH), artifact_path="deployment")
     print(f"Метрики сохранены в {METRICS_PATH}")
     print(f"Модель сохранена в {MODEL_PATH}")
 

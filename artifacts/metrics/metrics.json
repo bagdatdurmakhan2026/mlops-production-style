@@ -6,23 +6,48 @@
         "book_table",
         "online_order"
     ],
+    "selection_metric": "3-fold CV RMSE on training split",
+    "holdout_size": 8284,
+    "training_size_after_iqr": 27468,
+    "iqr_bounds_fit_on_training_split": {
+        "votes": {
+            "lower": -360.0,
+            "upper": 656.0
+        },
+        "approx_cost": {
+            "lower": -375.0,
+            "upper": 1425.0
+        },
+        "rate": {
+            "lower": 2.5,
+            "upper": 4.9
+        }
+    },
+    "data_validation": {
+        "input_rows": 51717,
+        "valid_rows": 41418,
+        "dropped_incomplete_rows": 10299,
+        "dropped_domain_invalid_rows": 0,
+        "rating_min": 1.8,
+        "rating_max": 4.9,
+        "negative_vote_rows": 0,
+        "negative_cost_rows": 0
+    },
     "mutual_information": {
-        "votes": 0.658,
-        "approx_cost": 0.0858,
-        "book_table": 0.0416,
-        "online_order": 0.0189
+        "votes": 0.6463,
+        "approx_cost": 0.0911,
+        "book_table": 0.0403,
+        "online_order": 0.0171
     },
     "permutation_importance": {
-        "votes": 0.1414,
-        "approx_cost": 0.0343,
-        "online_order": 0.0095,
-        "book_table": 0.0081
+        "votes": 0.1816,
+        "approx_cost": 0.0398,
+        "book_table": 0.0085,
+        "online_order": 0.0082
     },
     "candidates": {
         "HistGradientBoostingRegressor": {
-            "rmse": 0.3098684239053246,
-            "mae": 0.22663457189171074,
-            "r2_score": 0.3883942651582649,
+            "cv_rmse": 0.30785946432164285,
             "best_params": {
                 "max_leaf_nodes": 31,
                 "max_iter": 100,
@@ -31,9 +56,7 @@
             }
         },
         "XGBRegressor": {
-            "rmse": 0.31090363166746354,
-            "mae": 0.22767561260747823,
-            "r2_score": 0.3843009368301089,
+            "cv_rmse": 0.3087815649299322,
             "best_params": {
                 "subsample": 1.0,
                 "n_estimators": 200,
@@ -44,13 +67,19 @@
         }
     },
     "model": {
-        "rmse": 0.3099,
-        "mae": 0.2266,
-        "r2_score": 0.3884
+        "rmse": 0.3261,
+        "mae": 0.2316,
+        "r2_score": 0.4643
     },
     "baseline": {
-        "rmse": 0.3962,
-        "mae": 0.3208,
-        "r2_score": -0.0
+        "rmse": 0.4519,
+        "mae": 0.3656,
+        "r2_score": -0.0285
+    },
+    "training_environment": {
+        "python": "3.14.7",
+        "numpy": "2.3.2",
+        "pandas": "2.3.3",
+        "scikit-learn": "1.9.1"
     }
 }

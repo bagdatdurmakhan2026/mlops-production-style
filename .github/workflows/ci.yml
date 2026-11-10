@@ -37,3 +37,25 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t restaurant-ml-api .
+
+      - name: Smoke-test API container
+        run: |
+          docker run -d --name restaurant-ml-api-test -p 8000:8000 restaurant-ml-api
+          trap 'docker logs restaurant-ml-api-test; docker rm -f restaurant-ml-api-test' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8000/healthz; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:8000/healthz
+          prediction=$(curl --fail --silent \
+            -H "Content-Type: application/json" \
+            -d '{"features":[1200,1500]}' \
+            http://127.0.0.1:8000/predict)
+          python -c "import json,sys; assert isinstance(json.loads(sys.argv[1])['prediction'], (float,int))" "$prediction"
+          curl --fail --silent \
+            -H "Content-Type: application/json" \
+            -d '{"features":[1000000000,1000000000]}' \
+            http://127.0.0.1:8000/predict
+          curl --fail --silent http://127.0.0.1:8000/metrics | grep -q restaurant_input_drift_total

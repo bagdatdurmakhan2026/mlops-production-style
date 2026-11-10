@@ -1,7 +1,8 @@
 fastapi==0.110.0
 uvicorn==0.27.0
 pydantic==2.6.0
-numpy==2.0.2
-pandas==2.2.3
-scikit-learn==1.6.1
+numpy==2.3.2
+pandas==2.3.3
+scikit-learn==1.9.1
 starlette==0.36.3
+prometheus-client==0.21.1

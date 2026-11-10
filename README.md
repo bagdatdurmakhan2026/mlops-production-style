@@ -49,6 +49,7 @@ artifacts/
 ├── metrics/metrics.json           Latest regression evaluation
 └── models/model.pkl               Trained model artifact
 data/                              Local datasets (not committed)
+data/README.md                     Dataset naming, schema, and provenance notes
 reports/maps/                      Generated city maps and heatmaps
 src/train.py                       Rating training, tuning, and evaluation
 src/recommender.py                 Content recommendations and K-Means
@@ -67,11 +68,26 @@ Dockerfile                         Non-root API container
 python src\train.py
 ```
 
-The script cleans rating/cost fields, encodes available order options, removes
-IQR outliers, compares XGBoost and HistGradientBoosting with randomized
-cross-validation, and evaluates the selected model on a holdout set. It writes
-the selected model and input schema to `artifacts/models/model.pkl`, and
-metrics/parameters to `artifacts/metrics/metrics.json`.
+The script parses rating/cost fields, encodes available order options, then
+splits the valid rows into train and holdout sets. IQR bounds are learned only
+from the training partition and applied only to training rows. Feature
+selection and hyperparameter search use training data; the model winner is
+selected by cross-validation RMSE, never by holdout performance. The untouched
+holdout is used once for final RMSE, MAE, R², and permutation-importance
+reporting. The model and input schema are written to
+`artifacts/models/model.pkl`; metrics, IQR bounds, and selected parameters are
+written to `artifacts/metrics/metrics.json`.
+
+Each successful training run is also tracked in a local MLflow experiment and
+registered as a new version of `restaurant-rating`. The default SQLite tracking
+database and run artifacts are stored under `artifacts/` and ignored by Git.
+View runs with:
+
+```powershell
+mlflow ui --backend-store-uri sqlite:///artifacts/mlflow.db
+```
+
+Set `MLFLOW_TRACKING_URI` to use a shared tracking server instead.
 
 Current checked-in/local results are dataset-dependent. Regression should be
 reported with RMSE, MAE, and R²; an “82% accuracy” claim is not established by
@@ -140,8 +156,9 @@ python -m pytest -q
 python -m compileall -q api src tests
 ```
 
-GitHub Actions runs compilation and tests without requiring the large local
-datasets, and builds the Docker image separately.
+GitHub Actions runs compilation, unit/API tests, builds the Docker image, and
+smoke-tests `/healthz` and `/predict` in the running container without requiring
+the large local datasets.
 
 ### Docker
 
@@ -152,3 +169,13 @@ docker run --rm -p 8000:8000 restaurant-ml-api
 
 The container includes the API and trained model, runs as a non-root user, and
 does not copy local datasets or generated HTML maps.
+
+The API fails startup if the model artifact is missing or invalid rather than
+starting in a degraded state that only fails on prediction requests.
+It validates finite, non-negative request values, exposes Prometheus metrics at
+`/metrics`, and increments per-feature drift counters when inputs fall outside
+the 1st-to-99th percentile training reference interval. These counters are
+in-memory and reset when the service restarts; production persistence and alert
+routing require a Prometheus server. The model stores its training versions of
+scikit-learn and NumPy; API startup rejects artifacts created with incompatible
+versions to avoid silently loading an unsupported pickle.

@@ -21,6 +21,9 @@ env/
 *.pt
 *.bin
 data/*.csv
+artifacts/mlflow/
+artifacts/mlflow.db
+artifacts/mlflow.db-*
 
 # Logs & temp files
 *.log

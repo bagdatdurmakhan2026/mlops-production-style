@@ -2,7 +2,7 @@ import pandas as pd
 
 from src.geo_clustering import GeoAnalyzer
 from src.recommender import RestaurantRecommender
-from src.train import _clean_dataset
+from src.train import _clean_dataset, _filter_training_outliers
 
 
 def _restaurant_frame(size=12):
@@ -25,13 +25,42 @@ def _restaurant_frame(size=12):
 def test_clean_dataset_parses_numeric_and_binary_features():
     frame = _restaurant_frame()
 
-    features, target = _clean_dataset(frame)
+    features, target, report = _clean_dataset(frame)
 
     assert list(features.columns) == [
         "votes", "approx_cost", "online_order", "book_table"
     ]
     assert set(features["online_order"].unique()) <= {0.0, 1.0}
     assert len(features) == len(target) > 0
+    assert report["input_rows"] == report["valid_rows"] == len(frame)
+
+
+def test_iqr_cutoffs_are_fitted_only_on_training_rows():
+    X_train = pd.DataFrame(
+        {"votes": [10, 11, 12, 12, 13, 14], "approx_cost": [100, 110, 120, 120, 130, 140]}
+    )
+    y_train = pd.Series([3.5, 3.6, 3.7, 3.8, 3.9, 4.0])
+    X_test = pd.DataFrame({"votes": [1_000_000], "approx_cost": [1_000_000]})
+
+    filtered_X, filtered_y, bounds = _filter_training_outliers(X_train, y_train)
+
+    assert len(filtered_X) == len(filtered_y) == len(X_train)
+    assert X_test.iloc[0]["votes"] > bounds["votes"]["upper"]
+    assert X_test.iloc[0]["approx_cost"] > bounds["approx_cost"]["upper"]
+
+
+def test_dataset_validation_reports_invalid_rows():
+    frame = _restaurant_frame()
+    frame.loc[0, "rate"] = "not rated"
+    frame.loc[1, "rate"] = "5.5/5"
+    frame.loc[2, "votes"] = -1
+
+    features, target, report = _clean_dataset(frame)
+
+    assert len(features) == len(target) == len(frame) - 3
+    assert report["dropped_incomplete_rows"] == 1
+    assert report["dropped_domain_invalid_rows"] == 2
+    assert report["negative_vote_rows"] == 1
 
 
 def test_recommender_returns_neighbors_and_clusters():
