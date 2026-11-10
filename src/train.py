@@ -17,7 +17,7 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
-from xgboost import XGBRegressor
+from xgboost import XGBRegressor, __version__ as xgboost_version
 
 from src.data_validation import verify_dataset_checksum
 
@@ -27,17 +27,21 @@ CSV_NAME = "bangalore-restaurants.csv"
 CHECKSUMS_PATH = DATA_DIR / "checksums.sha256"
 MODEL_PATH = ROOT_DIR / "artifacts" / "models" / "model.pkl"
 METRICS_PATH = ROOT_DIR / "artifacts" / "metrics" / "metrics.json"
+RANDOM_STATE = 42
+HOLDOUT_FRACTION = 0.2
+CV_FOLDS = 3
+SEARCH_ITERATIONS = 4
 
 
-def load_data():
+def load_data() -> tuple[pd.DataFrame, str]:
     csv_path = DATA_DIR / CSV_NAME
     if not csv_path.exists():
         raise FileNotFoundError(f"Датасет не найден по пути: {csv_path}")
 
-    verify_dataset_checksum(csv_path, CHECKSUMS_PATH)
+    dataset_checksum = verify_dataset_checksum(csv_path, CHECKSUMS_PATH)
     df = pd.read_csv(csv_path)
     print("Доступные колонки в датасете:", df.columns.tolist())
-    return df
+    return df, dataset_checksum
 
 
 def _clean_dataset(df):
@@ -68,8 +72,7 @@ def _clean_dataset(df):
             binary = df[column].astype(str).str.strip().str.lower().map(
                 {"yes": 1.0, "no": 0.0}
             )
-            if binary.notna().any():
-                features[column] = binary
+            features[column] = binary
 
     parsed = (
         features.assign(rate=target)
@@ -100,42 +103,30 @@ def _clean_dataset(df):
     return X, y, validation_report
 
 
-def _filter_training_outliers(X_train, y_train):
-    training = X_train.copy()
-    training["rate"] = y_train
-    mask = pd.Series(True, index=training.index)
-    bounds = {}
-
-    for column in ("votes", "approx_cost", "rate"):
-        q1, q3 = training[column].quantile([0.25, 0.75])
-        iqr = q3 - q1
-        lower = float(q1 - 1.5 * iqr)
-        upper = float(q3 + 1.5 * iqr)
-        bounds[column] = {"lower": lower, "upper": upper}
-        if iqr > 0:
-            mask &= training[column].between(lower, upper)
-
-    filtered = training.loc[mask]
-    if filtered.empty:
-        raise ValueError("После фильтрации train-выбросов не осталось данных.")
-    return filtered.drop(columns="rate"), filtered["rate"], bounds
-
-
-def _select_features(X_train, y_train):
+def _feature_diagnostics(X_train, y_train):
     scores = mutual_info_regression(X_train, y_train, random_state=42)
     importance = pd.Series(scores, index=X_train.columns).sort_values(ascending=False)
-    core_features = ["votes", "approx_cost"]
-    extra_features = [
-        feature for feature in importance.index
-        if feature not in core_features
-    ][:3]
-    selected = core_features + extra_features
 
     print("Корреляции признаков:")
     print(X_train.corr().round(3).to_string())
     print("Взаимная информация признаков:")
     print(importance.round(4).to_string())
-    return selected, importance
+    return importance
+
+
+def _split_and_clean_dataset(df):
+    train_rows, holdout_rows = train_test_split(
+        df, test_size=HOLDOUT_FRACTION, random_state=RANDOM_STATE
+    )
+    X_train, y_train, train_report = _clean_dataset(train_rows)
+    X_holdout, y_holdout, holdout_report = _clean_dataset(holdout_rows)
+    return (
+        X_train,
+        X_holdout,
+        y_train,
+        y_holdout,
+        {"train": train_report, "holdout": holdout_report},
+    )
 
 
 def _tune_models(X_train, y_train):
@@ -173,9 +164,9 @@ def _tune_models(X_train, y_train):
         search = RandomizedSearchCV(
             estimator,
             params,
-            n_iter=4,
+            n_iter=SEARCH_ITERATIONS,
             scoring="neg_root_mean_squared_error",
-            cv=3,
+            cv=CV_FOLDS,
             random_state=42,
             n_jobs=-1,
         )
@@ -188,18 +179,19 @@ def _tune_models(X_train, y_train):
 def main():
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    print("Загрузка и очистка данных...")
-    X, y, validation_report = _clean_dataset(load_data())
-    X_train_raw, X_test, y_train_raw, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-    X_train, y_train, iqr_bounds = _filter_training_outliers(
-        X_train_raw, y_train_raw
-    )
-
-    selected_features, mutual_info = _select_features(X_train, y_train)
-    X_train = X_train[selected_features]
-    X_test = X_test[selected_features]
+    print("Загрузка датасета и фиксация holdout...")
+    raw_data, dataset_checksum = load_data()
+    (
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        validation_report,
+    ) = _split_and_clean_dataset(raw_data)
+    feature_schema = list(X_train.columns)
+    mutual_info = _feature_diagnostics(X_train, y_train)
+    X_train = X_train[feature_schema]
+    X_test = X_test[feature_schema]
 
     baseline = DummyRegressor(strategy="mean").fit(X_train, y_train)
     baseline_predictions = baseline.predict(X_test)
@@ -234,13 +226,15 @@ def main():
         "numpy": np.__version__,
         "pandas": pd.__version__,
         "scikit-learn": sklearn.__version__,
+        "xgboost": xgboost_version,
+        "mlflow": mlflow.__version__,
     }
     permutation = permutation_importance(
         model, X_test, y_test, scoring="neg_root_mean_squared_error",
         n_repeats=5, random_state=42, n_jobs=-1,
     )
     permutation_scores = pd.Series(
-        permutation.importances_mean, index=selected_features
+        permutation.importances_mean, index=feature_schema
     ).sort_values(ascending=False)
 
     print(f"Выбрана модель: {best_name}")
@@ -252,11 +246,26 @@ def main():
 
     metrics = {
         "selected_model": best_name,
-        "features": selected_features,
+        "features": feature_schema,
         "selection_metric": "3-fold CV RMSE on training split",
+        "feature_selection": "none; all schema-available features are used",
+        "split": {
+            "strategy": "random row split before parsing and validation",
+            "holdout_fraction": HOLDOUT_FRACTION,
+            "random_state": RANDOM_STATE,
+            "cv_strategy": "non-shuffled KFold",
+            "cv_folds": CV_FOLDS,
+            "search_iterations_per_model": SEARCH_ITERATIONS,
+        },
+        "dataset": {
+            "file": CSV_NAME,
+            "sha256": dataset_checksum,
+            "source_columns": list(raw_data.columns),
+            "source_license_status": "unverified local copy",
+            "input_rows": int(len(raw_data)),
+        },
         "holdout_size": int(len(y_test)),
-        "training_size_after_iqr": int(len(y_train)),
-        "iqr_bounds_fit_on_training_split": iqr_bounds,
+        "training_size": int(len(y_train)),
         "data_validation": validation_report,
         "mutual_information": mutual_info.round(4).to_dict(),
         "permutation_importance": permutation_scores.round(4).to_dict(),
@@ -269,7 +278,7 @@ def main():
         json.dump(metrics, file, indent=4)
     binary_defaults = {
         feature: float(X_train[feature].mode().iloc[0])
-        for feature in selected_features
+        for feature in feature_schema
         if feature not in {"votes", "approx_cost"}
     }
     input_reference = {
@@ -277,13 +286,13 @@ def main():
             "lower": float(X_train[feature].quantile(0.01)),
             "upper": float(X_train[feature].quantile(0.99)),
         }
-        for feature in selected_features
+        for feature in feature_schema
     }
     with open(MODEL_PATH, "wb") as file:
         pickle.dump(
             {
                 "model": model,
-                "features": selected_features,
+                "features": feature_schema,
                 "binary_defaults": binary_defaults,
                 "input_reference": input_reference,
                 "training_environment": training_environment,
@@ -317,8 +326,15 @@ def main():
     with mlflow.start_run(experiment_id=experiment_id, run_name=best_name):
         mlflow.log_param("selected_model", best_name)
         mlflow.log_param("selection_metric", "3-fold CV RMSE")
-        mlflow.log_param("features", json.dumps(selected_features))
-        mlflow.log_param("training_rows_after_iqr", len(y_train))
+        mlflow.log_param("features", json.dumps(feature_schema))
+        mlflow.log_param("dataset_file", CSV_NAME)
+        mlflow.log_param("dataset_sha256", dataset_checksum)
+        mlflow.log_param("split_random_state", RANDOM_STATE)
+        mlflow.log_param("holdout_fraction", HOLDOUT_FRACTION)
+        mlflow.log_param("cv_strategy", "non-shuffled KFold")
+        mlflow.log_param("cv_folds", CV_FOLDS)
+        mlflow.log_param("search_iterations_per_model", SEARCH_ITERATIONS)
+        mlflow.log_param("training_rows", len(y_train))
         mlflow.log_param("holdout_rows", len(y_test))
         mlflow.log_params(
             {

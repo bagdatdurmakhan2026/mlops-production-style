@@ -12,4 +12,4 @@ COPY api ./api
 COPY src ./src
 COPY scripts ./scripts
 
-CMD ["python", "src/train.py"]
+CMD ["python", "-m", "src.train"]

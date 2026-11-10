@@ -11,7 +11,7 @@ import sklearn
 from src.geo_clustering import GeoAnalyzer
 from src.recommender import RestaurantRecommender
 from src.data_validation import verify_dataset_checksum
-from src.train import _clean_dataset, _filter_training_outliers
+from src.train import _clean_dataset, _feature_diagnostics, _split_and_clean_dataset
 from src import train as train_module
 from scripts.model_registry import promote_version
 from sklearn.dummy import DummyRegressor
@@ -47,18 +47,40 @@ def test_clean_dataset_parses_numeric_and_binary_features():
     assert report["input_rows"] == report["valid_rows"] == len(frame)
 
 
-def test_iqr_cutoffs_are_fitted_only_on_training_rows():
-    X_train = pd.DataFrame(
-        {"votes": [10, 11, 12, 12, 13, 14], "approx_cost": [100, 110, 120, 120, 130, 140]}
+def test_holdout_is_split_before_any_data_cleaning(monkeypatch):
+    frame = _restaurant_frame(size=10)
+    frame.loc[9, "rate"] = "not rated"
+    split_lengths = []
+
+    def split_raw_rows(rows, test_size, random_state):
+        split_lengths.append(len(rows))
+        assert test_size == 0.2
+        assert random_state == 42
+        return rows.iloc[:8], rows.iloc[8:]
+
+    monkeypatch.setattr(train_module, "train_test_split", split_raw_rows)
+
+    X_train, X_holdout, y_train, y_holdout, report = _split_and_clean_dataset(
+        frame
     )
-    y_train = pd.Series([3.5, 3.6, 3.7, 3.8, 3.9, 4.0])
-    X_test = pd.DataFrame({"votes": [1_000_000], "approx_cost": [1_000_000]})
 
-    filtered_X, filtered_y, bounds = _filter_training_outliers(X_train, y_train)
+    assert split_lengths == [len(frame)]
+    assert len(X_train) == len(y_train) == 8
+    assert len(X_holdout) == len(y_holdout) == 1
+    assert report["train"]["input_rows"] == 8
+    assert report["holdout"]["input_rows"] == 2
+    assert report["holdout"]["dropped_incomplete_rows"] == 1
 
-    assert len(filtered_X) == len(filtered_y) == len(X_train)
-    assert X_test.iloc[0]["votes"] > bounds["votes"]["upper"]
-    assert X_test.iloc[0]["approx_cost"] > bounds["approx_cost"]["upper"]
+
+def test_feature_diagnostics_do_not_select_or_drop_features():
+    X_train = pd.DataFrame(
+        {"votes": [1, 2, 3, 4], "approx_cost": [10, 20, 30, 40], "online_order": [0, 1, 0, 1]}
+    )
+    y_train = pd.Series([4.0, 3.0, 4.0, 3.0])
+
+    diagnostic_scores = _feature_diagnostics(X_train, y_train)
+
+    assert set(diagnostic_scores.index) == set(X_train.columns)
 
 
 def test_dataset_validation_reports_invalid_rows():

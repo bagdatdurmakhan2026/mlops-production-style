@@ -22,6 +22,7 @@ env/
 *.pt
 *.bin
 data/*.csv
+reports/maps/*.html
 artifacts/mlflow/
 artifacts/mlflow.db
 artifacts/mlflow.db-*

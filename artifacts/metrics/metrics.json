@@ -3,51 +3,83 @@
     "features": [
         "votes",
         "approx_cost",
-        "book_table",
-        "online_order"
+        "online_order",
+        "book_table"
     ],
     "selection_metric": "3-fold CV RMSE on training split",
-    "holdout_size": 8284,
-    "training_size_after_iqr": 27468,
-    "iqr_bounds_fit_on_training_split": {
-        "votes": {
-            "lower": -360.0,
-            "upper": 656.0
+    "feature_selection": "none; all schema-available features are used",
+    "split": {
+        "strategy": "random row split before parsing and validation",
+        "holdout_fraction": 0.2,
+        "random_state": 42,
+        "cv_strategy": "non-shuffled KFold",
+        "cv_folds": 3,
+        "search_iterations_per_model": 4
+    },
+    "dataset": {
+        "file": "bangalore-restaurants.csv",
+        "sha256": "4b0c91c37585310d509873dc399fdf739c7d222fcf7a693e4461b23d25a9d43d",
+        "source_columns": [
+            "url",
+            "address",
+            "name",
+            "online_order",
+            "book_table",
+            "rate",
+            "votes",
+            "phone",
+            "location",
+            "rest_type",
+            "dish_liked",
+            "cuisines",
+            "approx_cost(for two people)",
+            "reviews_list",
+            "menu_item",
+            "listed_in(type)",
+            "listed_in(city)"
+        ],
+        "source_license_status": "unverified local copy",
+        "input_rows": 51717
+    },
+    "holdout_size": 8250,
+    "training_size": 33168,
+    "data_validation": {
+        "train": {
+            "input_rows": 41373,
+            "valid_rows": 33168,
+            "dropped_incomplete_rows": 8205,
+            "dropped_domain_invalid_rows": 0,
+            "rating_min": 1.8,
+            "rating_max": 4.9,
+            "negative_vote_rows": 0,
+            "negative_cost_rows": 0
         },
-        "approx_cost": {
-            "lower": -375.0,
-            "upper": 1425.0
-        },
-        "rate": {
-            "lower": 2.5,
-            "upper": 4.9
+        "holdout": {
+            "input_rows": 10344,
+            "valid_rows": 8250,
+            "dropped_incomplete_rows": 2094,
+            "dropped_domain_invalid_rows": 0,
+            "rating_min": 2.1,
+            "rating_max": 4.9,
+            "negative_vote_rows": 0,
+            "negative_cost_rows": 0
         }
     },
-    "data_validation": {
-        "input_rows": 51717,
-        "valid_rows": 41418,
-        "dropped_incomplete_rows": 10299,
-        "dropped_domain_invalid_rows": 0,
-        "rating_min": 1.8,
-        "rating_max": 4.9,
-        "negative_vote_rows": 0,
-        "negative_cost_rows": 0
-    },
     "mutual_information": {
-        "votes": 0.6463,
-        "approx_cost": 0.0911,
-        "book_table": 0.0403,
-        "online_order": 0.0171
+        "votes": 0.8617,
+        "approx_cost": 0.21,
+        "book_table": 0.1185,
+        "online_order": 0.0138
     },
     "permutation_importance": {
-        "votes": 0.1816,
+        "votes": 0.2079,
         "approx_cost": 0.0398,
-        "book_table": 0.0085,
-        "online_order": 0.0082
+        "book_table": 0.015,
+        "online_order": 0.0098
     },
     "candidates": {
         "HistGradientBoostingRegressor": {
-            "cv_rmse": 0.30785946432164285,
+            "cv_rmse": 0.30695277834042217,
             "best_params": {
                 "max_leaf_nodes": 31,
                 "max_iter": 100,
@@ -56,7 +88,7 @@
             }
         },
         "XGBRegressor": {
-            "cv_rmse": 0.3087815649299322,
+            "cv_rmse": 0.3085387576387903,
             "best_params": {
                 "subsample": 1.0,
                 "n_estimators": 200,
@@ -67,19 +99,21 @@
         }
     },
     "model": {
-        "rmse": 0.3261,
-        "mae": 0.2316,
-        "r2_score": 0.4643
+        "rmse": 0.3052,
+        "mae": 0.219,
+        "r2_score": 0.5221
     },
     "baseline": {
-        "rmse": 0.4519,
-        "mae": 0.3656,
-        "r2_score": -0.0285
+        "rmse": 0.4415,
+        "mae": 0.3521,
+        "r2_score": -0.0004
     },
     "training_environment": {
         "python": "3.14.7",
         "numpy": "2.3.2",
         "pandas": "2.3.3",
-        "scikit-learn": "1.9.1"
+        "scikit-learn": "1.9.1",
+        "xgboost": "3.4.1",
+        "mlflow": "3.18.0"
     }
 }

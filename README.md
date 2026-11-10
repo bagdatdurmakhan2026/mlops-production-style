@@ -56,7 +56,7 @@ data/                              Local datasets (not committed)
 data/README.md                     Dataset naming, schema, and provenance notes
 data/checksums.sha256              SHA-256 for the exact development CSV files
 monitoring/                        Prometheus rules and Grafana dashboard config
-reports/maps/                      Generated city maps and heatmaps
+reports/maps/                      Locally generated city maps and heatmaps
 src/train.py                       Rating training, tuning, and evaluation
 src/data_validation.py             Dataset checksum verification
 scripts/model_registry.py          List, promote, and roll back model versions
@@ -74,18 +74,21 @@ Dockerfile.training                Training and MLflow server image
 ### Train rating models
 
 ```powershell
-python src\train.py
+python -m src.train
 ```
 
-The script parses rating/cost fields, encodes available order options, then
-splits the valid rows into train and holdout sets. IQR bounds are learned only
-from the training partition and applied only to training rows. Feature
-selection and hyperparameter search use training data; the model winner is
-selected by cross-validation RMSE, never by holdout performance. The untouched
-holdout is used once for final RMSE, MAE, R², and permutation-importance
-reporting. The model and input schema are written to
-`artifacts/models/model.pkl`; metrics, IQR bounds, and selected parameters are
-written to `artifacts/metrics/metrics.json`.
+The script first splits the raw rows into training and holdout partitions, then
+parses and validates each partition independently. No IQR filtering or
+target-based feature selection is performed before cross-validation: every
+schema-available feature is used, and mutual information is recorded only as a
+training-set diagnostic. Hyperparameters and the winning model are chosen by
+3-fold cross-validation on training rows, never by holdout performance. The
+holdout is reserved for final RMSE, MAE, R², and permutation-importance
+reporting. Metrics record the local dataset SHA-256, feature schema, split
+seed, validation counts, and CV configuration; the hash identifies the exact
+file but does not establish its source or license. The model and input schema
+are written to `artifacts/models/model.pkl`; metrics and selected parameters
+are written to `artifacts/metrics/metrics.json`.
 
 Each successful training run is also tracked in a local MLflow experiment and
 registered as a new version of `restaurant-rating`. The default SQLite tracking
@@ -160,11 +163,12 @@ Outputs:
 - `reports/maps/astana-restaurants.html`
 - `reports/maps/astana-restaurants-correlations.html`
 
-Open the map files in a browser. Real latitude/longitude columns are used when
-available. Otherwise, reproducible demonstration coordinates are spread over a
-12 km radius around the configured city center. Maps are visibly labeled as
-synthetic and must not be used as evidence of actual restaurant locations or
-density.
+Map HTML files are generated locally and ignored by Git; run the command above
+to recreate them. Open the map files in a browser. Real latitude/longitude
+columns are used when available. Otherwise, reproducible demonstration
+coordinates are spread over a 12 km radius around the configured city center.
+Maps are visibly labeled as synthetic and must not be used as evidence of
+actual restaurant locations or density.
 
 ### Tests and CI
 
