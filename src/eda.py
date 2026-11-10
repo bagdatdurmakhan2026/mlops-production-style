@@ -1,5 +1,5 @@
 import pandas as pd
-df = pd.read_csv('data/zomato.csv.zip')
+df = pd.read_csv('data/bangalore-restaurants.csv')
 print(df.info())
 print(df.head())
 print(df['rate'].head(10))

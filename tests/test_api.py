@@ -1,5 +1,7 @@
+import pytest
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
-from api.app import app
+from api.app import PredictionInput, app
 
 client = TestClient(app) # явно передаем через app=app
 
@@ -20,3 +22,11 @@ def test_predict():
     # Жестко проверяем, что API возвращает поле "prediction" со значением-числом
     assert "prediction" in data
     assert isinstance(data["prediction"], (int, float))
+
+def test_predict_rejects_wrong_feature_count():
+    response = client.post("/predict", json={"features": [100.0, 500.0, 1.0]})
+    assert response.status_code == 422
+
+def test_predict_rejects_non_finite_features():
+    with pytest.raises(ValidationError):
+        PredictionInput(features=[float("nan"), 500.0])

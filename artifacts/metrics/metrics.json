@@ -1,0 +1,56 @@
+{
+    "selected_model": "HistGradientBoostingRegressor",
+    "features": [
+        "votes",
+        "approx_cost",
+        "book_table",
+        "online_order"
+    ],
+    "mutual_information": {
+        "votes": 0.658,
+        "approx_cost": 0.0858,
+        "book_table": 0.0416,
+        "online_order": 0.0189
+    },
+    "permutation_importance": {
+        "votes": 0.1414,
+        "approx_cost": 0.0343,
+        "online_order": 0.0095,
+        "book_table": 0.0081
+    },
+    "candidates": {
+        "HistGradientBoostingRegressor": {
+            "rmse": 0.3098684239053246,
+            "mae": 0.22663457189171074,
+            "r2_score": 0.3883942651582649,
+            "best_params": {
+                "max_leaf_nodes": 31,
+                "max_iter": 100,
+                "learning_rate": 0.1,
+                "l2_regularization": 0.0
+            }
+        },
+        "XGBRegressor": {
+            "rmse": 0.31090363166746354,
+            "mae": 0.22767561260747823,
+            "r2_score": 0.3843009368301089,
+            "best_params": {
+                "subsample": 1.0,
+                "n_estimators": 200,
+                "max_depth": 5,
+                "learning_rate": 0.1,
+                "colsample_bytree": 0.8
+            }
+        }
+    },
+    "model": {
+        "rmse": 0.3099,
+        "mae": 0.2266,
+        "r2_score": 0.3884
+    },
+    "baseline": {
+        "rmse": 0.3962,
+        "mae": 0.3208,
+        "r2_score": -0.0
+    }
+}

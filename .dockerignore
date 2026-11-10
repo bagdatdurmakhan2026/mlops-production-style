@@ -6,3 +6,8 @@ venv/
 env/
 .pytest_cache
 data/
+reports/
+tests/
+*.html
+.vscode/
+.idea/
