@@ -41,9 +41,10 @@ jobs:
       - name: Validate Prometheus configuration
         run: |
           docker run --rm \
+            --entrypoint=/bin/promtool \
             -v "$GITHUB_WORKSPACE/monitoring/prometheus:/etc/prometheus:ro" \
             prom/prometheus:v3.5.0 \
-            promtool check config /etc/prometheus/prometheus.yml
+            check config /etc/prometheus/prometheus.yml
 
       - name: Build MLOps stack
         run: docker compose --profile tools build
